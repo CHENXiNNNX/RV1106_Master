@@ -1,0 +1,1 @@
+cmd_/home/irex/WorkSpace/RV1106_Master/SDK/rv1106-sdk/esp-hosted/esp_hosted_ng/host/Module.symvers := sed 's/\.ko$$/\.o/' /home/irex/WorkSpace/RV1106_Master/SDK/rv1106-sdk/esp-hosted/esp_hosted_ng/host/modules.order | scripts/mod/modpost     -o /home/irex/WorkSpace/RV1106_Master/SDK/rv1106-sdk/esp-hosted/esp_hosted_ng/host/Module.symvers -e -i Module.symvers   -T -

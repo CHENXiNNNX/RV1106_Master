@@ -1,0 +1,474 @@
+// SPDX-License-Identifier: (GPL-2.0+ OR MIT)
+/*
+ * Copyright (c) 2022 Rockchip Electronics Co., Ltd.
+ */
+#include "rv1106-amp.dtsi"
+
+/ {
+	chosen {
+		bootargs = "earlycon=uart8250,mmio32,0xff4c0000 console=ttyFIQ0 root=/dev/mmcblk1p7 rootwait snd_soc_core.prealloc_buffer_size_kbytes=16 coherent_pool=0";
+	};
+
+	reserved_memory: reserved-memory {
+		#address-cells = <1>;
+		#size-cells = <1>;
+		ranges;
+		
+		drm_logo: drm-logo@00000000 {
+			compatible = "rockchip,drm-logo";
+			reg = <0x0 0x0>;
+		};
+		
+		rkisp_reserved: rkisp@0 {
+			compatible = "shared-dma-pool";
+			inactive;
+			reusable;
+			size = <0x800000>; /* ISP 8MiB */
+		};
+
+		linux,cma {
+			status = "okay";
+			compatible = "shared-dma-pool";
+			inactive;
+			reusable;
+			size = <0xA00000>; /* CMA 10MiB */
+			linux,cma-default;
+		};
+	};
+
+	/*
+	 * 音频：i2s0_8ch 全双工，共用 BCLK/LRCK（trcm=1）须同帧长。
+	 * 播：GPIO2_A4（SDO0）→ MAX98357；采：GPIO2_A5（SDI0）← 3×ICS-52000 TDM。
+	 * 帧格式：dsp_a，8×32 slot → BCLK=256×Fs（与 12.288MHz MCLK、MAX TDM-32 / ICS Table8 n=8 对齐）。
+	 * 使能：GPIO2_A3（SD_MODE）gpio-hog；GPIO3_A5（EN）→ leds/98357_en，需 pinctrl 为 GPIO。
+	 */
+	max98357_en_leds: max98357-en-leds {
+		compatible = "gpio-leds";
+		pinctrl-names = "default";
+		pinctrl-0 = <&max98357_en_pin>;
+
+		max98357_en {
+			label = "98357_en";
+			gpios = <&gpio3 RK_PA5 GPIO_ACTIVE_HIGH>;
+			default-state = "on";
+			linux,default-trigger = "none";
+		};
+	};
+
+	max98357a: max98357a {
+		compatible = "maxim,max98357a";
+		#sound-dai-cells = <0>;
+	};
+
+	/* ICS-52000：dmic-codec 占位，声道=8（与 TDM slot 一致） */
+	ics52000_codec: ics52000-codec {
+		compatible = "dmic-codec";
+		num-channels = <8>;
+		#sound-dai-cells = <0>;
+	};
+
+	max98357_sound: max98357-sound {
+		status = "okay";
+		compatible = "simple-audio-card";
+		simple-audio-card,name = "RV1106_Audio";
+		simple-audio-card,mclk-fs = <256>;
+		#address-cells = <1>;
+		#size-cells = <0>;
+
+		/* link@0：播放 → MAX98357 */
+		simple-audio-card,dai-link@0 {
+			reg = <0>;
+			format = "dsp_a";
+			bitclock-master = <&play_cpu>;
+			frame-master = <&play_cpu>;
+			play_cpu: cpu {
+				sound-dai = <&i2s0_8ch>;
+				dai-tdm-slot-num = <8>;
+				dai-tdm-slot-width = <32>;
+			};
+			codec {
+				sound-dai = <&max98357a>;
+			};
+		};
+
+		/* link@1：采集 → 3×ICS-52000 */
+		simple-audio-card,dai-link@1 {
+			reg = <1>;
+			format = "dsp_a";
+			bitclock-master = <&ics_cpu>;
+			frame-master = <&ics_cpu>;
+			ics_cpu: cpu {
+				sound-dai = <&i2s0_8ch>;
+				dai-tdm-slot-num = <8>;
+				dai-tdm-slot-width = <32>;
+			};
+			codec {
+				sound-dai = <&ics52000_codec>;
+			};
+		};
+	};
+
+	vcc_1v8: vcc-1v8 {
+		compatible = "regulator-fixed";
+		regulator-name = "vcc_1v8";
+		regulator-always-on;
+		regulator-boot-on;
+		regulator-min-microvolt = <1800000>;
+		regulator-max-microvolt = <1800000>;
+	};
+
+	vcc_3v3: vcc-3v3 {
+		compatible = "regulator-fixed";
+		regulator-name = "vcc_3v3";
+		regulator-always-on;
+		regulator-boot-on;
+		regulator-min-microvolt = <3300000>;
+		regulator-max-microvolt = <3300000>;
+	};
+
+	vdd_arm: vdd-arm {
+		compatible = "regulator-fixed";
+		regulator-name = "vdd_arm";
+		regulator-min-microvolt = <800000>;
+		regulator-max-microvolt = <1000000>;
+		regulator-init-microvolt = <900000>;
+		regulator-always-on;
+		regulator-boot-on;
+	};
+
+	leds: leds {
+		compatible = "gpio-leds";
+		work_led: work{
+			gpios = <&gpio0 RK_PA3 GPIO_ACTIVE_HIGH>;
+			linux,default-trigger = "activity";
+			default-state = "on";
+		};	
+	};
+
+};
+
+/* I2S0：MAX98357 播放 + ICS-52000 采集 */
+&i2s0_8ch {
+	#sound-dai-cells = <0>;
+	status = "okay";
+	pinctrl-names = "default";
+	pinctrl-0 = <&i2s0_custom_pins>;
+	/* trcm=1：RX 共用 TX BCLK/LRCK；bclk-fs=256×Fs；sdi0 → RX channel 0 */
+	rockchip,clk-trcm = <1>;
+	rockchip,bclk-fs = <256>;
+	rockchip,playback-channels = <2>;
+	rockchip,capture-channels = <8>;
+	rockchip,i2s-rx-route = <0 1 2 3>;
+	assigned-clocks = <&cru MCLK_I2S0_8CH_TX>;
+	assigned-clock-rates = <12288000>;
+};
+
+&acodec {
+	status = "disabled";
+	#sound-dai-cells = <0>;
+};
+
+&cpu0 {
+	cpu-supply = <&vdd_arm>;
+};
+
+&saradc {
+	status = "okay";
+	vref-supply = <&vcc_1v8>;
+};
+
+&tsadc {
+	status = "okay";
+};
+
+&csi2_dphy_hw {
+	status = "okay";
+};
+
+&csi2_dphy0 {
+	status = "okay";
+
+	ports {
+		#address-cells = <1>;
+		#size-cells = <0>;
+
+		port@0 {
+			reg = <0>;
+			#address-cells = <1>;
+			#size-cells = <0>;
+
+			csi_dphy_input0: endpoint@0 {
+				reg = <0>;
+				remote-endpoint = <&sc3336_out>;
+				data-lanes = <1 2>;
+			};
+
+			csi_dphy_input1: endpoint@1 {
+				reg = <1>;
+				remote-endpoint = <&sc4336_out>;
+				data-lanes = <1 2>;
+			};
+
+			csi_dphy_input2: endpoint@2 {
+				reg = <2>;
+				remote-endpoint = <&sc530ai_out>;
+				data-lanes = <1 2>;
+			};
+
+			csi_dphy_input3: endpoint@3 {
+				reg = <3>;
+				remote-endpoint = <&imx219_out>;
+				data-lanes = <1 2>;
+			};
+
+		};
+
+		port@1 {
+			reg = <1>;
+			#address-cells = <1>;
+			#size-cells = <0>;
+
+			csi_dphy_output: endpoint@0 {
+				reg = <0>;
+				remote-endpoint = <&mipi_csi2_input>;
+			};
+		};
+	};
+};
+
+&i2c4 {
+	status = "okay";
+	clock-frequency = <400000>;
+	pinctrl-names = "default";
+	pinctrl-0 = <&i2c4m2_xfer>;
+
+	sc3336: sc3336@30 {
+		compatible = "smartsens,sc3336";
+		status = "disabled";
+		reg = <0x30>;
+		clocks = <&cru MCLK_REF_MIPI0>;
+		clock-names = "xvclk";
+		pwdn-gpios = <&gpio3 RK_PC5 GPIO_ACTIVE_HIGH>;
+		pinctrl-names = "default";
+		pinctrl-0 = <&mipi_refclk_out0>;
+		rockchip,camera-module-index = <0>;
+		rockchip,camera-module-facing = "back";
+		rockchip,camera-module-name = "CMK-OT2119-PC1";
+		rockchip,camera-module-lens-name = "30IRC-F16";
+		port {
+			sc3336_out: endpoint {
+				remote-endpoint = <&csi_dphy_input0>;
+				data-lanes = <1 2>;
+			};
+		};
+	};
+
+	sc4336: sc4336@30 {
+		compatible = "smartsens,sc4336";
+		status = "disabled";
+		reg = <0x30>;
+		clocks = <&cru MCLK_REF_MIPI0>;
+		clock-names = "xvclk";
+		pwdn-gpios = <&gpio3 RK_PC5 GPIO_ACTIVE_HIGH>;
+		pinctrl-names = "default";
+		pinctrl-0 = <&mipi_refclk_out0>;
+		rockchip,camera-module-index = <0>;
+		rockchip,camera-module-facing = "back";
+		rockchip,camera-module-name = "OT01";
+		rockchip,camera-module-lens-name = "40IRC_F16";
+		port {
+			sc4336_out: endpoint {
+				remote-endpoint = <&csi_dphy_input1>;
+				data-lanes = <1 2>;
+			};
+		};
+	};
+
+	sc530ai: sc530ai@30 {
+		compatible = "smartsens,sc530ai";
+		status = "disabled";
+		reg = <0x30>;
+		clocks = <&cru MCLK_REF_MIPI0>;
+		clock-names = "xvclk";
+		pwdn-gpios = <&gpio3 RK_PC5 GPIO_ACTIVE_HIGH>;
+		pinctrl-names = "default";
+		pinctrl-0 = <&mipi_refclk_out0>;
+		rockchip,camera-module-index = <0>;
+		rockchip,camera-module-facing = "back";
+		rockchip,camera-module-name = "CMK-OT2115-PC1";
+		rockchip,camera-module-lens-name = "30IRC-F16";
+		port {
+			sc530ai_out: endpoint {
+				remote-endpoint = <&csi_dphy_input2>;
+				data-lanes = <1 2>;
+			};
+		};
+	};
+
+	imx219: imx219@10 {
+		compatible = "sony,imx219";
+		status = "okay";
+		reg = <0x10>;
+
+		clocks = <&cru MCLK_REF_MIPI0>;
+
+
+		clock-names = "xvclk";
+		assigned-clocks = <&cru MCLK_REF_MIPI0>;
+        	assigned-clock-rates = <24000000>;
+
+		pwdn-gpios = <&gpio3 RK_PC5 GPIO_ACTIVE_HIGH>;
+
+		pinctrl-names = "default";
+		pinctrl-0 = <&mipi_refclk_out0>;
+		rockchip,camera-module-index = <0>;
+		rockchip,camera-module-facing = "back";
+		rockchip,camera-module-name = "default";
+		rockchip,camera-module-lens-name = "default";
+		
+		port {
+			imx219_out: endpoint {
+				remote-endpoint = <&csi_dphy_input3>;
+				data-lanes = <1 2>;
+				link-frequencies = /bits/ 64 <456000000>;
+			};
+		};
+	};
+
+};
+
+&mipi0_csi2 {
+	status = "okay";
+
+	ports {
+		#address-cells = <1>;
+		#size-cells = <0>;
+
+		port@0 {
+			reg = <0>;
+			#address-cells = <1>;
+			#size-cells = <0>;
+
+			mipi_csi2_input: endpoint@1 {
+				reg = <1>;
+				remote-endpoint = <&csi_dphy_output>;
+			};
+		};
+
+		port@1 {
+			reg = <1>;
+			#address-cells = <1>;
+			#size-cells = <0>;
+
+			mipi_csi2_output: endpoint@0 {
+				reg = <0>;
+				remote-endpoint = <&cif_mipi_in>;
+			};
+		};
+	};
+};
+
+&rkcif {
+	status = "okay";
+};
+
+&rkcif_mipi_lvds {
+	status = "okay";
+
+	pinctrl-names = "default";
+	pinctrl-0 = <&mipi_pins>;
+	port {
+		cif_mipi_in: endpoint {
+			remote-endpoint = <&mipi_csi2_output>;
+		};
+	};
+};
+
+&rkcif_mipi_lvds_sditf {
+	status = "okay";
+
+	port {
+		mipi_lvds_sditf: endpoint {
+			remote-endpoint = <&isp_in>;
+		};
+	};
+};
+
+&rkisp {
+	status = "okay";
+	memory-region = <&rkisp_reserved>;
+};
+
+&rkisp_vir0 {
+	status = "okay";
+
+	port@0 {
+		isp_in: endpoint {
+			remote-endpoint = <&mipi_lvds_sditf>;
+		};
+	};
+};
+
+/* MAX98357 SD_MODE：GPIO2_A3 常高 */
+&gpio2 {
+	max98357_sd_hog: max98357-sd-hog {
+		gpio-hog;
+		gpios = <RK_PA3 GPIO_ACTIVE_HIGH>;
+		output-high;
+		line-name = "98357_sd";
+	};
+};
+
+/* 外设引脚复用 */
+&i2c0 {
+	pinctrl-0 = <&i2c0m2_xfer>;
+};
+
+&i2c1 {
+	pinctrl-0 = <&i2c1m1_xfer>;
+};
+
+&i2c3 {
+	pinctrl-0 = <&i2c3m1_xfer>;
+};
+
+&uart0 {
+	pinctrl-0 = <&uart0m0_xfer &uart0m1_xfer>;
+};
+&uart1 {
+	pinctrl-0 = <&uart1m1_xfer>;
+};
+&uart3 {
+	pinctrl-0 = <&uart3m1_xfer>;
+};
+&uart4 {
+	pinctrl-0 = <&uart4m1_xfer>;
+};
+&uart5 {
+	pinctrl-0 = <&uart5m0_xfer>;
+};
+
+&pinctrl {
+	/* MAX98357 EN（GPIO3_A5）：MUX=GPIO（否则与 SDMMC/UART/PWM 复用冲突） */
+	max98357_en {
+		max98357_en_pin: max98357-en-pin {
+			rockchip,pins =
+				<3 RK_PA5 RK_FUNC_GPIO &pcfg_pull_none>;
+		};
+	};
+
+	/* I2S0：PA0~2 M/SCLK&LRCK&MCLK，PA4 DO→MAX98357，PA5 DI←ICS；PA3 为 GPIO（SD_MODE 见 gpio-hog） */
+	i2s0_custom {
+		i2s0_custom_pins: i2s0-custom-pins {
+			rockchip,pins =
+				<2 RK_PA0 2 &pcfg_pull_none>,
+				<2 RK_PA1 2 &pcfg_pull_none>,
+				<2 RK_PA2 2 &pcfg_pull_none>,
+				<2 RK_PA4 2 &pcfg_pull_none>,
+				<2 RK_PA5 2 &pcfg_pull_none>;
+		};
+	};
+
+};
+
+

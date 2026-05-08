@@ -1,0 +1,1 @@
+cmd_/home/irex/WorkSpace/RV1106_Master/SDK/rv1106-sdk/esp-hosted/esp_hosted_ng/host/modules.order := {   echo /home/irex/WorkSpace/RV1106_Master/SDK/rv1106-sdk/esp-hosted/esp_hosted_ng/host/esp32_spi.ko; :; } | awk '!x[$$0]++' - > /home/irex/WorkSpace/RV1106_Master/SDK/rv1106-sdk/esp-hosted/esp_hosted_ng/host/modules.order
